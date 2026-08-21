@@ -12,7 +12,12 @@ instruction about **this charge**, and the same decline code carries different
 advice on different transactions. So a retry can contradict an instruction the
 issuer already gave.
 
-This counts how often that happened in your own data.
+This counts how often that happened in your own data. Then it counts the other
+direction, which is usually the expensive one: charges the issuer said **try
+again later** that were never attempted again.
+
+The first is wasted effort. The second is revenue nobody went back for, on an
+instruction that was already there and free.
 
 ## Get it and run it
 
@@ -49,6 +54,19 @@ Real shape, synthetic numbers:
 
   value sitting on those charges, at the amount of the refused attempt:
            98.00 EUR
+
+  --------------------------------------------------------------------
+
+  THE OTHER DIRECTION, WHICH IS USUALLY THE EXPENSIVE ONE.
+
+  charges the issuer said TRY AGAIN LATER:          2
+  of those, NEVER attempted again on that card:     1
+  distinct cards involved:                          1
+
+  => 50.0% of try_again_later charges were never retried.
+
+  value on charges the issuer invited you to retry and nobody did:
+           29.00 EUR
 ```
 
 The two lines that matter are the last two, and both are hedged in the output
@@ -82,6 +100,11 @@ identical from the outside whether your dunning system scheduled it or the
 customer tried again themselves. Treat it as the largest the problem could be,
 then check a handful by eye against your own retry log to find where it sits.
 
+**The abandoned figure is a ceiling too.** Some of those customers cancelled,
+refunded, paid by another route, or were retried outside the window your export
+covers. What it measures is the population your dunning did not come back to, on
+charges where the issuer said coming back was worth trying.
+
 **The money figure is not recoverable revenue.** It is the value attached to
 charges the issuer had already refused for good, so it measures the size of the
 population being retried rather than money on the table. Some of it is
@@ -93,7 +116,7 @@ recoverable with a new card. None of it with the same one.
 python3 test_advice_code_check.py
 ```
 
-Thirteen cases, no dependencies, every fixture synthetic. They cover the things
+Nineteen cases, no dependencies, every fixture synthetic. They cover the things
 that would quietly change the answer rather than break the run: a succeeded
 charge must not enter the population, an attempt BEFORE the refusal is not a
 contradiction, a later attempt on a different card is not one either, one card
@@ -104,9 +127,16 @@ Three of them assert that the hedges are still in the output. The ceiling
 warning and the not-recoverable-revenue warning are load-bearing, and if they
 could be dropped without a test going red, eventually somebody would drop them.
 
-The suite has been mutation tested rather than merely run: removing the
-forward-in-time comparison from the detector turns it red on the direction case,
-with the message "an attempt BEFORE the refusal cannot have been caused by it".
+The suite has been mutation tested rather than merely run, on both halves.
+Removing the forward-in-time comparison from the contradiction detector turns it
+red with "an attempt BEFORE the refusal cannot have been caused by it". Removing
+it from the abandoned detector turns it red too, rather than silently reporting
+every charge as never retried.
+
+It also caught a real defect while being written: a population containing only
+`try_again_later` returned early and never printed the abandoned section at all,
+so the half that finds money was invisible in exactly the case where it was the
+only thing to say.
 
 ## Requires
 

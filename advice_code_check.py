@@ -8,7 +8,10 @@ about a code; the advice code is the issuer's instruction about THIS charge, and
 code carries different advice on different transactions. So a retry can contradict an
 instruction the issuer already gave.
 
-This script counts how often that happened in YOUR data. It runs on YOUR machine, against
+This script counts how often that happened in YOUR data, and then it counts the other
+direction, which is usually the expensive one: charges the issuer said TRY AGAIN LATER
+that were never attempted again. The first is wasted effort. The second is revenue nobody
+went back for, on an instruction that was already there and free. It runs on YOUR machine, against
 YOUR export or YOUR read-only key. Nothing is sent anywhere. There is no network call
 except to Stripe's own API when you pass --api, and no write of any kind, ever.
 
@@ -26,6 +29,8 @@ purchase attempt by the customer looks the same from the outside. The number is 
 on contradicting retries, never a count, and the script says so on every run.
 """
 import argparse, csv, os, sys, json, collections, datetime
+
+Result = collections.namedtuple("Result", "total by_advice dnt contradicted keys money tal abandoned ab_keys ab_money")
 
 ADVICE = ("do_not_try_again", "try_again_later", "confirm_card_data")
 
@@ -82,9 +87,25 @@ def analyse(records):
                 if r.get("amount") is not None:
                     money[(r.get("currency") or "?").lower()] += r["amount"]
                 break
-    return by_advice, len(dnt), contradicted, len(affected_keys), money
 
-def report(total, by_advice, dnt, contradicted, keys, money, population):
+    # THE OTHER DIRECTION, AND IT IS THE ONE PEOPLE DO NOT LOOK FOR.
+    # try_again_later is the issuer saying this may work on another day. A charge
+    # carrying it that was NEVER attempted again is a recovery nobody attempted.
+    tal = [r for r in records if r["advice"] == "try_again_later"]
+    abandoned, abandoned_keys, abandoned_money = 0, set(), collections.Counter()
+    for r in tal:
+        if not any(s is not r and s["ts"] is not None and r["ts"] is not None and s["ts"] > r["ts"]
+                   for s in later[r["key"]]):
+            abandoned += 1; abandoned_keys.add(r["key"])
+            if r.get("amount") is not None:
+                abandoned_money[(r.get("currency") or "?").lower()] += r["amount"]
+    return Result(len(records), by_advice, len(dnt), contradicted, len(affected_keys), money,
+                  len(tal), abandoned, len(abandoned_keys), abandoned_money)
+
+def report(res, population):
+    total, by_advice, dnt = res.total, res.by_advice, res.dnt
+    contradicted, keys, money = res.contradicted, res.keys, res.money
+    tal, abandoned, ab_keys, ab_money = res.tal, res.abandoned, res.ab_keys, res.ab_money
     print()
     print(f"  POPULATION: {population}")
     print(f"  declined charges examined: {total}")
@@ -100,7 +121,11 @@ def report(total, by_advice, dnt, contradicted, keys, money, population):
     if not dnt:
         print("  No charge in this population carried do_not_try_again, so there is nothing")
         print("  here for a retry to contradict. That is a real result and a good one.")
-        return
+    else:
+        _contradiction_section(dnt, contradicted, keys, money)
+    _abandoned_section(tal, abandoned, ab_keys, ab_money)
+
+def _contradiction_section(dnt, contradicted, keys, money):
     print(f"  charges the issuer said DO NOT TRY AGAIN:        {dnt}")
     print(f"  of those, a later attempt hit the same card:     {contradicted}")
     print(f"  distinct cards involved:                         {keys}")
@@ -125,6 +150,33 @@ def report(total, by_advice, dnt, contradicted, keys, money, population):
     print("  from the outside whether your dunning system scheduled it or the customer tried")
     print("  again themselves. Treat it as the largest the problem could be, then check a")
     print("  handful by eye against your own retry log to find where it actually sits.")
+
+def _abandoned_section(tal, abandoned, ab_keys, ab_money):
+    print()
+    print("  " + "-" * 68)
+    print()
+    print("  THE OTHER DIRECTION, WHICH IS USUALLY THE EXPENSIVE ONE.")
+    print()
+    if not tal:
+        print("  No charge here carried try_again_later, so there is nothing that was refused")
+        print("  for timing and left alone.")
+        return
+    print(f"  charges the issuer said TRY AGAIN LATER:          {tal}")
+    print(f"  of those, NEVER attempted again on that card:     {abandoned}")
+    print(f"  distinct cards involved:                          {ab_keys}")
+    print()
+    print(f"  => {abandoned*100.0/tal:.1f}% of try_again_later charges were never retried.")
+    print()
+    if ab_money:
+        print("  value on charges the issuer invited you to retry and nobody did:")
+        for c, v in sorted(ab_money.items()):
+            print(f"    {v/100.0:>12,.2f} {c.upper()}")
+        print()
+    print("  THIS IS ALSO A CEILING. Some of these customers cancelled, refunded, paid by")
+    print("  another route, or were retried outside the window this export covers. What it")
+    print("  measures is the population your dunning did not come back to, on charges where")
+    print("  the issuer said coming back was worth trying. That is the cheapest place to")
+    print("  look for revenue, because the instruction was already there and free.")
 
 def main():
     ap = argparse.ArgumentParser()
@@ -181,8 +233,7 @@ def main():
                 url = None
         pop = f"Stripe API, declined charges in the last {a.days} days"
 
-    by_advice, dnt, contradicted, keys, money = analyse(recs)
-    report(len(recs), by_advice, dnt, contradicted, keys, money, pop)
+    report(analyse(recs), pop)
     print()
     print("  Nothing left this machine. This script makes no write call of any kind.")
 

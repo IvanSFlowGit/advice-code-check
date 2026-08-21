@@ -34,50 +34,88 @@ def analyse_rows(rows):
             for x in rows if x["status"] != "succeeded"]
     return m.analyse(recs)
 
+def abandoned_of(rows):
+    res = analyse_rows(rows)
+    return res.tal, res.abandoned, res.ab_keys, res.ab_money
+
 class TestAnalysis(unittest.TestCase):
 
     def test_1_succeeded_charges_are_not_in_the_population(self):
         rows = [r("A", "do_not_try_again", 1), r("B", "", 2, status="succeeded")]
-        by_advice, dnt, contra, keys, money = analyse_rows(rows)
-        self.assertEqual(sum(by_advice.values()), 1, "a succeeded charge must not be counted as a decline")
+        res = analyse_rows(rows)
+        self.assertEqual(sum(res.by_advice.values()), 1, "a succeeded charge must not be counted as a decline")
 
     def test_2_do_not_try_again_with_no_later_attempt_is_compliant(self):
         rows = [r("A", "do_not_try_again", 1)]
-        _, dnt, contra, keys, money = analyse_rows(rows)
-        self.assertEqual((dnt, contra, keys), (1, 0, 0))
-        self.assertEqual(dict(money), {}, "nothing contradicted means no money attributed")
+        res = analyse_rows(rows)
+        self.assertEqual((res.dnt, res.contradicted, res.keys), (1, 0, 0))
+        self.assertEqual(dict(res.money), {}, "nothing contradicted means no money attributed")
 
     def test_3_a_later_attempt_on_the_same_card_is_a_contradiction(self):
         rows = [r("A", "do_not_try_again", 1), r("A", "", 2)]
-        _, dnt, contra, keys, _ = analyse_rows(rows)
-        self.assertEqual((dnt, contra, keys), (1, 1, 1))
+        res = analyse_rows(rows)
+        self.assertEqual((res.dnt, res.contradicted, res.keys), (1, 1, 1))
 
     def test_3b_an_EARLIER_attempt_is_not_a_contradiction(self):
         """Direction matters. If the detector stops comparing timestamps this goes red."""
         rows = [r("A", "", 1), r("A", "do_not_try_again", 2)]
-        _, dnt, contra, keys, _ = analyse_rows(rows)
-        self.assertEqual(contra, 0, "an attempt BEFORE the refusal cannot have been caused by it")
+        self.assertEqual(analyse_rows(rows).contradicted, 0, "an attempt BEFORE the refusal cannot have been caused by it")
 
     def test_3c_a_later_attempt_on_a_DIFFERENT_card_is_not_a_contradiction(self):
         rows = [r("A", "do_not_try_again", 1), r("B", "", 2)]
-        _, _, contra, keys, _ = analyse_rows(rows)
-        self.assertEqual((contra, keys), (0, 0))
+        res = analyse_rows(rows)
+        self.assertEqual((res.contradicted, res.keys), (0, 0))
 
     def test_4_money_is_the_amount_of_the_refused_attempt_not_the_retry(self):
         rows = [r("A", "do_not_try_again", 1, amount=4900), r("A", "", 2, amount=999)]
-        *_, money = analyse_rows(rows)
-        self.assertEqual(dict(money), {"eur": 4900})
+        self.assertEqual(dict(analyse_rows(rows).money), {"eur": 4900})
 
     def test_4b_money_sums_per_currency(self):
         rows = [r("A", "do_not_try_again", 1, amount=100, cur="eur"), r("A", "", 2),
                 r("B", "do_not_try_again", 1, amount=250, cur="usd"), r("B", "", 2)]
-        *_, money = analyse_rows(rows)
-        self.assertEqual(dict(money), {"eur": 100, "usd": 250})
+        self.assertEqual(dict(analyse_rows(rows).money), {"eur": 100, "usd": 250})
 
     def test_5_one_card_counted_once_however_many_retries(self):
         rows = [r("A", "do_not_try_again", 1), r("A", "", 2), r("A", "", 3)]
-        _, _, contra, keys, _ = analyse_rows(rows)
-        self.assertEqual((contra, keys), (1, 1), "one refused charge, one contradiction, one card")
+        res = analyse_rows(rows)
+        self.assertEqual((res.contradicted, res.keys), (1, 1), "one refused charge, one contradiction, one card")
+
+class TestAbandonedRetries(unittest.TestCase):
+    """try_again_later that nobody went back for. The direction that finds money."""
+
+    def test_6_never_retried_is_abandoned(self):
+        rows = [r("A", "try_again_later", 1, amount=2500)]
+        tal, ab, keys, money = abandoned_of(rows)
+        self.assertEqual((tal, ab, keys), (1, 1, 1))
+        self.assertEqual(dict(money), {"eur": 2500})
+
+    def test_6b_retried_is_NOT_abandoned(self):
+        """If the forward-looking check breaks, this goes red rather than silently
+        reporting every charge as abandoned."""
+        rows = [r("A", "try_again_later", 1, amount=2500), r("A", "", 2)]
+        tal, ab, keys, money = abandoned_of(rows)
+        self.assertEqual((tal, ab, keys), (1, 0, 0))
+        self.assertEqual(dict(money), {})
+
+    def test_6c_a_retry_on_a_different_card_does_not_count_as_going_back(self):
+        rows = [r("A", "try_again_later", 1), r("B", "", 2)]
+        tal, ab, keys, _ = abandoned_of(rows)
+        self.assertEqual((tal, ab, keys), (1, 1, 1))
+
+    def test_6d_do_not_try_again_is_not_counted_as_abandoned(self):
+        """The two directions must not contaminate each other."""
+        rows = [r("A", "do_not_try_again", 1)]
+        tal, ab, keys, _ = abandoned_of(rows)
+        self.assertEqual((tal, ab, keys), (0, 0, 0))
+
+    def test_6e_both_directions_coexist_in_one_population(self):
+        rows = [r("A", "do_not_try_again", 1, amount=100), r("A", "", 2),
+                r("B", "try_again_later", 1, amount=900)]
+        res = analyse_rows(rows)
+        self.assertEqual((res.dnt, res.contradicted), (1, 1))
+        self.assertEqual((res.tal, res.abandoned), (1, 1))
+        self.assertEqual(dict(res.money), {"eur": 100})
+        self.assertEqual(dict(res.ab_money), {"eur": 900})
 
 class TestRefusals(unittest.TestCase):
     def run_cli(self, *args):
@@ -121,6 +159,15 @@ class TestOutputHonesty(unittest.TestCase):
         self.assertIn("CEILING, NOT A COUNT", out)
         self.assertIn("NOT RECOVERABLE REVENUE", out)
         self.assertIn("Nothing left this machine", out)
+
+    def test_the_abandoned_side_is_hedged_too(self):
+        rows = [r("A", "try_again_later", 1, amount=2500)]
+        p = rows_to_csv(rows)
+        out = subprocess.run([sys.executable, os.path.join(HERE, "advice_code_check.py"), "--csv", p],
+                             capture_output=True, text=True).stdout
+        os.unlink(p)
+        self.assertIn("THIS IS ALSO A CEILING", out)
+        self.assertIn("cancelled, refunded, paid by", out)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
