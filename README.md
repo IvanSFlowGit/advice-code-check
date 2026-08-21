@@ -14,11 +14,45 @@ issuer already gave.
 
 This counts how often that happened in your own data.
 
-## Run it
+## Get it and run it
 
 ```
+curl -O https://raw.githubusercontent.com/futureoftech73/advice-code-check/main/advice_code_check.py
 python3 advice_code_check.py --csv declines.csv
 ```
+
+Read it first. It is one file, no dependencies, and it is short enough to read in
+the time it takes to decide whether to trust it. Do not pipe it into an
+interpreter, from here or from anywhere.
+
+## What the output looks like
+
+Real shape, synthetic numbers:
+
+```
+  POPULATION: declines.csv, column 'advice_code' for the advice code,
+              'card_fingerprint' as the card key
+  declined charges examined: 7
+
+  issuer instruction, as returned by Stripe:
+    do_not_try_again          3   42.9%
+    try_again_later           2   28.6%
+    confirm_card_data         1   14.3%
+    (none returned)           1   14.3%
+
+  charges the issuer said DO NOT TRY AGAIN:        3
+  of those, a later attempt hit the same card:     2
+  distinct cards involved:                         1
+
+  => 66.7% of do_not_try_again charges were followed by
+     another attempt on the same card.
+
+  value sitting on those charges, at the amount of the refused attempt:
+           98.00 EUR
+```
+
+The two lines that matter are the last two, and both are hedged in the output
+itself rather than in a footnote. See below for why.
 
 The dashboard export usually will not carry the advice code. That is the normal
 case, and the script tells you so rather than guessing. Use the API instead:
