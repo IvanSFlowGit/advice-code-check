@@ -87,6 +87,27 @@ charges the issuer had already refused for good, so it measures the size of the
 population being retried rather than money on the table. Some of it is
 recoverable with a new card. None of it with the same one.
 
+## Tests
+
+```
+python3 test_advice_code_check.py
+```
+
+Thirteen cases, no dependencies, every fixture synthetic. They cover the things
+that would quietly change the answer rather than break the run: a succeeded
+charge must not enter the population, an attempt BEFORE the refusal is not a
+contradiction, a later attempt on a different card is not one either, one card
+counts once however many retries follow, and the money is the amount of the
+refused attempt rather than the retry.
+
+Three of them assert that the hedges are still in the output. The ceiling
+warning and the not-recoverable-revenue warning are load-bearing, and if they
+could be dropped without a test going red, eventually somebody would drop them.
+
+The suite has been mutation tested rather than merely run: removing the
+forward-in-time comparison from the detector turns it red on the direction case,
+with the message "an attempt BEFORE the refusal cannot have been caused by it".
+
 ## Requires
 
 Python 3.8+. No dependencies.
