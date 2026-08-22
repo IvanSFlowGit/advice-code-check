@@ -22,7 +22,7 @@ instruction that was already there and free.
 ## Get it and run it
 
 ```
-curl -O https://raw.githubusercontent.com/futureoftech73/advice-code-check/main/advice_code_check.py
+curl -O https://raw.githubusercontent.com/IvanSFlowGit/advice-code-check/main/advice_code_check.py
 python3 advice_code_check.py --csv declines.csv
 ```
 
